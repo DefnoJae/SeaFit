@@ -1,1 +1,24 @@
-
+{
+  "id": "SeaFit",
+  "name": "SeaFit",
+  "version": "0.1.0",
+  "manifestURI": "https://raw.githubusercontent.com/DefnoJae/SeaFit/refs/heads/main/Manifest.json",
+  "language": "typescript",
+  "type": "plugin",
+  "description": "Adds a one-button video aspect control to Seanime for Original/Fit, Crop/Fill, and Stretch modes.",
+  "author": "Jae",
+  "icon": "https://raw.githubusercontent.com/DefnoJae/SeaFit/refs/heads/main/assets/icon.png",
+  "website": "https://github.com/DefnoJae/SeaFit",
+  "readme": "https://github.com/DefnoJae/SeaFit/blob/main/README.md",
+  "lang": "en",
+  "payloadURI": "https://raw.githubusercontent.com/DefnoJae/SeaFit/refs/heads/main/src/SeaFit.js",
+  "plugin": {
+    "version": "1",
+    "permissions": {
+      "scopes": [
+        "storage"
+      ]
+    }
+  },
+  "isDevelopment": false
+}
