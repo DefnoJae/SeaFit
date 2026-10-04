@@ -19,7 +19,7 @@ The cycle is:
 - Shows a hover tooltip with the current mode.
 - Works in normal and fullscreen playback.
 - Supports Seanime's desktop and mobile control layouts.
-- Remembers the selected mode across episode changes and app refreshes.
+- Remembers the selected mode **per anime**. The next episode of the same anime keeps the mode, while a different anime starts in Original / Fit unless you previously set a mode for that anime.
 - Automatically reattaches when Seanime rerenders or replaces the video player.
 - Uses the normal Seanime video element; no replacement player is created.
 
@@ -49,4 +49,4 @@ This means playback, subtitles, seeking, volume, quality selection, and the rest
 
 ## Version
 
-Current release: **0.1.0**
+Current release: **0.1.3**

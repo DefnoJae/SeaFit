@@ -8,8 +8,9 @@ function init() {
         var doc = host && host.document;
         if (!host || !doc) return;
 
-        var VERSION = "0.1.0";
-        var STORAGE_KEY = "seafit.mode";
+        var VERSION = "0.1.3";
+        var STORAGE_KEY = "seafit.modeByAnime.v1";
+        var LEGACY_STORAGE_KEY = "seafit.mode";
         var STYLE_ID = "seafit-player-style";
         var CONTROL_ATTR = "data-seafit-control";
         var MODES = ["fit", "fill", "stretch"];
@@ -24,10 +25,12 @@ function init() {
           stretch: '<svg viewBox="0 0 32 32" aria-hidden="true"><rect x="3.5" y="7" width="25" height="18" rx="2.5"></rect><path d="M7.5 16h17M7.5 16l4-4M7.5 16l4 4M24.5 16l-4-4M24.5 16l-4 4"></path></svg>'
         };
 
-        var currentMode = readMode();
+        var currentMode = "fit";
+        var currentAnimeKey = null;
         var bodyObserver = null;
         var mountQueued = false;
         var resizeHandler = null;
+        var popstateHandler = null;
 
         if (host.__seafit && host.__seafit.version === VERSION) {
           try { host.__seafit.mount(); } catch (_) {}
@@ -38,16 +41,77 @@ function init() {
           try { host.__seafit.destroy(); } catch (_) {}
         }
 
-        function readMode() {
-          try {
-            var value = host.localStorage.getItem(STORAGE_KEY);
-            if (MODES.indexOf(value) !== -1) return value;
-          } catch (_) {}
-          return "fit";
+        // Remove the old global setting so a crop/stretch choice cannot leak
+        // into a completely different anime after upgrading to per-anime storage.
+        try { host.localStorage.removeItem(LEGACY_STORAGE_KEY); } catch (_) {}
+
+        function isValidMode(value) {
+          return MODES.indexOf(value) !== -1;
         }
 
-        function saveMode() {
-          try { host.localStorage.setItem(STORAGE_KEY, currentMode); } catch (_) {}
+        function normalizeTitle(value) {
+          return String(value || "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .toLowerCase();
+        }
+
+        function getAnimeKey() {
+          // The entry route gives us the strongest identifier when the player
+          // was opened from an anime page.
+          try {
+            var url = new host.URL(host.location.href);
+            if (url.pathname.indexOf("/entry") !== -1) {
+              var id = url.searchParams.get("id");
+              if (id) return "id:" + String(id);
+            }
+          } catch (_) {}
+
+          // When playback was started from Home / Continue Watching, use the
+          // anime title rendered by Seanime's Video Core. This title stays the
+          // same when moving between episodes of that anime.
+          try {
+            var titleElement = doc.querySelector('[data-vc-element="top-playback-info-title"]');
+            var title = titleElement ? normalizeTitle(titleElement.textContent) : "";
+            if (title) return "title:" + title;
+          } catch (_) {}
+
+          return null;
+        }
+
+        function readModeMap() {
+          try {
+            var raw = host.localStorage.getItem(STORAGE_KEY);
+            if (!raw) return {};
+            var parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+          } catch (_) {}
+          return {};
+        }
+
+        function readModeForAnime(key) {
+          if (!key) return "fit";
+          var map = readModeMap();
+          var value = map[key];
+          return isValidMode(value) ? value : "fit";
+        }
+
+        function saveModeForCurrentAnime() {
+          if (!currentAnimeKey) return;
+          try {
+            var map = readModeMap();
+            map[currentAnimeKey] = currentMode;
+            host.localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
+          } catch (_) {}
+        }
+
+        function syncAnimeIdentity() {
+          var nextKey = getAnimeKey();
+          if (!nextKey || nextKey === currentAnimeKey) return false;
+
+          currentAnimeKey = nextKey;
+          currentMode = readModeForAnime(currentAnimeKey);
+          return true;
         }
 
         function getVideo() {
@@ -96,7 +160,7 @@ function init() {
           var video = getVideo();
           if (video) video.setAttribute("data-seafit-mode", currentMode);
           updateAllButtons();
-          if (shouldSave) saveMode();
+          if (shouldSave) saveModeForCurrentAnime();
         }
 
         function cycleMode(event) {
@@ -104,6 +168,11 @@ function init() {
             try { event.preventDefault(); } catch (_) {}
             try { event.stopPropagation(); } catch (_) {}
           }
+
+          // Re-check the anime before saving so a fast navigation can never
+          // write the new choice under the previous anime's key.
+          syncAnimeIdentity();
+
           var index = MODES.indexOf(currentMode);
           currentMode = MODES[(index + 1) % MODES.length];
           applyMode(true);
@@ -180,14 +249,18 @@ function init() {
 
         function mount() {
           ensureStyle();
+
           var video = getVideo();
           if (!video) return false;
 
+          syncAnimeIdentity();
           video.setAttribute("data-seafit-mode", currentMode);
+
           removeStaleControls();
           var desktop = mountDesktopControl();
           var mobile = mountMobileControl();
           updateAllButtons();
+
           return desktop || mobile;
         }
 
@@ -201,29 +274,40 @@ function init() {
         }
 
         resizeHandler = function () { queueMount(); };
+        popstateHandler = function () { queueMount(); };
         host.addEventListener("resize", resizeHandler, true);
+        host.addEventListener("popstate", popstateHandler, true);
 
         bodyObserver = new host.MutationObserver(function () {
           var video = getVideo();
           if (!video) return;
 
+          var animeChanged = syncAnimeIdentity();
           var needsMode = video.getAttribute("data-seafit-mode") !== currentMode;
           var desktopSection = doc.querySelector('[data-vc-element="control-bar-main-section"]');
           var mobileSection = doc.querySelector('[data-vc-element="mobile-control-bar-bottom-content"]');
           var desktopMissing = desktopSection && !desktopSection.querySelector('button[' + CONTROL_ATTR + '="1"][data-seafit-layout="desktop"]');
           var mobileMissing = mobileSection && !mobileSection.querySelector('button[' + CONTROL_ATTR + '="1"][data-seafit-layout="mobile"]');
 
-          if (needsMode || desktopMissing || mobileMissing) queueMount();
+          if (animeChanged || needsMode || desktopMissing || mobileMissing) queueMount();
         });
 
-        if (doc.body) bodyObserver.observe(doc.body, { childList: true, subtree: true, attributes: false });
+        if (doc.body) {
+          bodyObserver.observe(doc.body, {
+            childList: true,
+            subtree: true,
+            characterData: true
+          });
+        }
 
         host.__seafit = {
           version: VERSION,
           mount: mount,
           getMode: function () { return currentMode; },
+          getAnimeKey: function () { return currentAnimeKey; },
           setMode: function (mode) {
-            if (MODES.indexOf(mode) === -1) return false;
+            if (!isValidMode(mode)) return false;
+            syncAnimeIdentity();
             currentMode = mode;
             applyMode(true);
             return true;
@@ -238,6 +322,9 @@ function init() {
             }
             if (resizeHandler) {
               try { host.removeEventListener("resize", resizeHandler, true); } catch (_) {}
+            }
+            if (popstateHandler) {
+              try { host.removeEventListener("popstate", popstateHandler, true); } catch (_) {}
             }
 
             var buttons = doc.querySelectorAll('button[' + CONTROL_ATTR + '="1"]');
@@ -309,6 +396,9 @@ function init() {
       if (elements && elements.length) ensureBootstrap();
     });
     ctx.dom.observe('[data-vc-element="mobile-control-bar-bottom-content"]', (elements) => {
+      if (elements && elements.length) ensureBootstrap();
+    });
+    ctx.dom.observe('[data-vc-element="top-playback-info-title"]', (elements) => {
       if (elements && elements.length) ensureBootstrap();
     });
   });
