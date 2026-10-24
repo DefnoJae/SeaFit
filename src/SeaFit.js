@@ -1,6 +1,7 @@
 function init() {
   $ui.register((ctx) => {
     const BOOTSTRAP_ATTR = "data-seafit-bootstrap";
+    var bootstrapPending = false;
 
     function pageBootstrap() {
       (function () {
@@ -8,7 +9,7 @@ function init() {
         var doc = host && host.document;
         if (!host || !doc) return;
 
-        var VERSION = "0.1.3";
+        var VERSION = "0.1.4";
         var STORAGE_KEY = "seafit.modeByAnime.v1";
         var LEGACY_STORAGE_KEY = "seafit.mode";
         var STYLE_ID = "seafit-player-style";
@@ -29,6 +30,8 @@ function init() {
         var currentAnimeKey = null;
         var bodyObserver = null;
         var mountQueued = false;
+        var mountFrame = null;
+        var destroyed = false;
         var resizeHandler = null;
         var popstateHandler = null;
 
@@ -61,7 +64,7 @@ function init() {
           // was opened from an anime page.
           try {
             var url = new host.URL(host.location.href);
-            if (url.pathname.indexOf("/entry") !== -1) {
+            if (/^\/entry\/?$/.test(url.pathname)) {
               var id = url.searchParams.get("id");
               if (id) return "id:" + String(id);
             }
@@ -97,7 +100,7 @@ function init() {
         }
 
         function saveModeForCurrentAnime() {
-          if (!currentAnimeKey) return;
+          if (!currentAnimeKey || !isValidMode(currentMode)) return;
           try {
             var map = readModeMap();
             map[currentAnimeKey] = currentMode;
@@ -107,7 +110,13 @@ function init() {
 
         function syncAnimeIdentity() {
           var nextKey = getAnimeKey();
-          if (!nextKey || nextKey === currentAnimeKey) return false;
+          if (!nextKey) {
+            var changed = currentAnimeKey !== null || currentMode !== "fit";
+            currentAnimeKey = null;
+            currentMode = "fit";
+            return changed;
+          }
+          if (nextKey === currentAnimeKey) return false;
 
           currentAnimeKey = nextKey;
           currentMode = readModeForAnime(currentAnimeKey);
@@ -120,6 +129,7 @@ function init() {
 
         function ensureStyle() {
           var style = doc.getElementById(STYLE_ID);
+          if (style) return;
           if (!style) {
             style = doc.createElement("style");
             style.id = STYLE_ID;
@@ -127,9 +137,9 @@ function init() {
           }
 
           style.textContent =
-            'video[data-vc-element="video"][data-seafit-mode="fit"]{object-fit:contain!important;object-position:center!important;}' +
-            'video[data-vc-element="video"][data-seafit-mode="fill"]{object-fit:cover!important;object-position:center!important;}' +
-            'video[data-vc-element="video"][data-seafit-mode="stretch"]{object-fit:fill!important;object-position:center!important;}' +
+            'video[data-seafit-mode="fit"]{object-fit:contain!important;object-position:center!important;}' +
+            'video[data-seafit-mode="fill"]{object-fit:cover!important;object-position:center!important;}' +
+            'video[data-seafit-mode="stretch"]{object-fit:fill!important;object-position:center!important;}' +
             'button[' + CONTROL_ATTR + '="1"]{appearance:none;background:transparent!important;border:0!important;color:#fff!important;cursor:pointer;display:flex;align-items:center;justify-content:center;position:relative;height:100%;flex:none;padding:0 8px;line-height:1;transition:opacity .15s ease;overflow:visible!important;}' +
             'button[' + CONTROL_ATTR + '="1"]:hover{opacity:.8;}' +
             'button[' + CONTROL_ATTR + '="1"]:focus{outline:none;}' +
@@ -143,6 +153,7 @@ function init() {
 
         function updateButton(button) {
           if (!button) return;
+          if (button.getAttribute("data-seafit-state") === currentMode) return;
           var label = LABELS[currentMode] || LABELS.fit;
           button.setAttribute("data-seafit-state", currentMode);
           button.setAttribute("data-seafit-tooltip", "Aspect: " + label);
@@ -157,8 +168,11 @@ function init() {
         }
 
         function applyMode(shouldSave) {
+          if (!currentAnimeKey || !isValidMode(currentMode)) currentMode = "fit";
           var video = getVideo();
-          if (video) video.setAttribute("data-seafit-mode", currentMode);
+          if (video && video.getAttribute("data-seafit-mode") !== currentMode) {
+            video.setAttribute("data-seafit-mode", currentMode);
+          }
           updateAllButtons();
           if (shouldSave) saveModeForCurrentAnime();
         }
@@ -248,15 +262,13 @@ function init() {
         }
 
         function mount() {
+          if (destroyed) return false;
           ensureStyle();
-
+          syncAnimeIdentity();
+          removeStaleControls();
           var video = getVideo();
           if (!video) return false;
-
-          syncAnimeIdentity();
-          video.setAttribute("data-seafit-mode", currentMode);
-
-          removeStaleControls();
+          applyMode(false);
           var desktop = mountDesktopControl();
           var mobile = mountMobileControl();
           updateAllButtons();
@@ -265,9 +277,10 @@ function init() {
         }
 
         function queueMount() {
-          if (mountQueued) return;
+          if (destroyed || mountQueued) return;
           mountQueued = true;
-          host.requestAnimationFrame(function () {
+          mountFrame = host.requestAnimationFrame(function () {
+            mountFrame = null;
             mountQueued = false;
             mount();
           });
@@ -279,10 +292,9 @@ function init() {
         host.addEventListener("popstate", popstateHandler, true);
 
         bodyObserver = new host.MutationObserver(function () {
+          var animeChanged = syncAnimeIdentity();
           var video = getVideo();
           if (!video) return;
-
-          var animeChanged = syncAnimeIdentity();
           var needsMode = video.getAttribute("data-seafit-mode") !== currentMode;
           var desktopSection = doc.querySelector('[data-vc-element="control-bar-main-section"]');
           var mobileSection = doc.querySelector('[data-vc-element="mobile-control-bar-bottom-content"]');
@@ -292,11 +304,13 @@ function init() {
           if (animeChanged || needsMode || desktopMissing || mobileMissing) queueMount();
         });
 
-        if (doc.body) {
-          bodyObserver.observe(doc.body, {
+        if (doc.documentElement) {
+          bodyObserver.observe(doc.documentElement, {
             childList: true,
             subtree: true,
-            characterData: true
+            characterData: true,
+            attributes: true,
+            attributeFilter: ["src", "data-vc-element", "data-video-core-element", "data-seafit-mode"]
           });
         }
 
@@ -317,6 +331,9 @@ function init() {
             return currentMode;
           },
           destroy: function () {
+            destroyed = true;
+            if (mountFrame !== null) host.cancelAnimationFrame(mountFrame);
+            mountQueued = false;
             if (bodyObserver) {
               try { bodyObserver.disconnect(); } catch (_) {}
             }
@@ -357,6 +374,8 @@ function init() {
     }
 
     async function ensureBootstrap() {
+      if (bootstrapPending) return;
+      bootstrapPending = true;
       try {
         var existing = await ctx.dom.queryOne("iframe[" + BOOTSTRAP_ATTR + "=\"1\"]");
         if (existing) return;
@@ -370,26 +389,28 @@ function init() {
 
         ctx.setTimeout(async () => {
           try {
-            var video = await ctx.dom.queryOne('video[data-vc-element="video"]');
+            var video = await ctx.dom.queryOne('video[data-vc-element="video"], video[data-video-core-element]');
             var control = await ctx.dom.queryOne('button[data-seafit-control="1"]');
             if (video && !control) ctx.toast.warning("SeaFit could not attach to Seanime's video controls.");
           } catch (_) {}
         }, 1400);
       } catch (_) {
         try { ctx.toast.error("SeaFit failed to initialize."); } catch (_) {}
+      } finally {
+        bootstrapPending = false;
       }
     }
 
     async function ensureIfPlayerExists() {
       try {
-        var video = await ctx.dom.queryOne('video[data-vc-element="video"]');
+        var video = await ctx.dom.queryOne('video[data-vc-element="video"], video[data-video-core-element]');
         if (video) await ensureBootstrap();
       } catch (_) {}
     }
 
     ctx.dom.onReady(() => { ensureIfPlayerExists(); });
     ctx.dom.onMainTabReady(() => { ensureIfPlayerExists(); });
-    ctx.dom.observe('video[data-vc-element="video"]', (elements) => {
+    ctx.dom.observe('video[data-vc-element="video"], video[data-video-core-element]', (elements) => {
       if (elements && elements.length) ensureBootstrap();
     });
     ctx.dom.observe('[data-vc-element="control-bar-main-section"]', (elements) => {

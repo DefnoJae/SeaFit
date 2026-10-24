@@ -49,4 +49,8 @@ This means playback, subtitles, seeking, volume, quality selection, and the rest
 
 ## Version
 
-Current release: **0.1.3**
+Current release: **0.1.4**
+
+Unknown anime identities safely use Original / Fit and do not save a mode until an anime can be identified. Existing per-anime preferences are preserved.
+
+Run the regression checks with `node --test tests/*.test.cjs`.
