@@ -2,6 +2,8 @@ function init() {
   $ui.register((ctx) => {
     const BOOTSTRAP_ATTR = "data-seafit-bootstrap";
     var bootstrapPending = false;
+    var bootstrapApplied = false;
+    var bootstrapAgain = false;
 
     function pageBootstrap() {
       (function () {
@@ -9,7 +11,7 @@ function init() {
         var doc = host && host.document;
         if (!host || !doc) return;
 
-        var VERSION = "0.1.4";
+        var VERSION = "0.1.5";
         var STORAGE_KEY = "seafit.modeByAnime.v1";
         var LEGACY_STORAGE_KEY = "seafit.mode";
         var STYLE_ID = "seafit-player-style";
@@ -60,6 +62,15 @@ function init() {
         }
 
         function getAnimeKey() {
+          // Playback identity survives mini-player mode and does not follow
+          // whichever entry page happens to be open behind the player.
+          try {
+            var frame = window.frameElement;
+            if (frame && frame.hasAttribute("data-seafit-anime-id")) {
+              var mediaId = frame.getAttribute("data-seafit-anime-id");
+              return /^[1-9]\d*$/.test(mediaId) ? "id:" + mediaId : null;
+            }
+          } catch (_) {}
           // The entry route gives us the strongest identifier when the player
           // was opened from an anime page.
           try {
@@ -127,6 +138,17 @@ function init() {
           return doc.querySelector('video[data-vc-element="video"], video[data-video-core-element]');
         }
 
+        function getSurfaces() {
+          var video = getVideo();
+          var surfaces = video ? [video] : [];
+          var container = video && video.parentElement;
+          if (container) {
+            var canvases = container.querySelectorAll("canvas.vc-anime4k-canvas, canvas[data-mpv-prism-video-canvas]");
+            for (var i = 0; i < canvases.length; i++) surfaces.push(canvases[i]);
+          }
+          return surfaces;
+        }
+
         function ensureStyle() {
           var style = doc.getElementById(STYLE_ID);
           if (style) return;
@@ -137,9 +159,10 @@ function init() {
           }
 
           style.textContent =
-            'video[data-seafit-mode="fit"]{object-fit:contain!important;object-position:center!important;}' +
-            'video[data-seafit-mode="fill"]{object-fit:cover!important;object-position:center!important;}' +
-            'video[data-seafit-mode="stretch"]{object-fit:fill!important;object-position:center!important;}' +
+            '[data-seafit-mode="fit"]{object-fit:contain!important;object-position:center!important;}' +
+            '[data-seafit-mode="fill"]{object-fit:cover!important;object-position:center!important;}' +
+            '[data-seafit-mode="stretch"]{object-fit:fill!important;object-position:center!important;}' +
+            'canvas[data-seafit-mode]{width:100%!important;height:100%!important;left:0!important;top:0!important;}' +
             'button[' + CONTROL_ATTR + '="1"]{appearance:none;background:transparent!important;border:0!important;color:#fff!important;cursor:pointer;display:flex;align-items:center;justify-content:center;position:relative;height:100%;flex:none;padding:0 8px;line-height:1;transition:opacity .15s ease;overflow:visible!important;}' +
             'button[' + CONTROL_ATTR + '="1"]:hover{opacity:.8;}' +
             'button[' + CONTROL_ATTR + '="1"]:focus{outline:none;}' +
@@ -169,9 +192,11 @@ function init() {
 
         function applyMode(shouldSave) {
           if (!currentAnimeKey || !isValidMode(currentMode)) currentMode = "fit";
-          var video = getVideo();
-          if (video && video.getAttribute("data-seafit-mode") !== currentMode) {
-            video.setAttribute("data-seafit-mode", currentMode);
+          var surfaces = getSurfaces();
+          for (var i = 0; i < surfaces.length; i++) {
+            if (surfaces[i].getAttribute("data-seafit-mode") !== currentMode) {
+              surfaces[i].setAttribute("data-seafit-mode", currentMode);
+            }
           }
           updateAllButtons();
           if (shouldSave) saveModeForCurrentAnime();
@@ -295,7 +320,10 @@ function init() {
           var animeChanged = syncAnimeIdentity();
           var video = getVideo();
           if (!video) return;
-          var needsMode = video.getAttribute("data-seafit-mode") !== currentMode;
+          var surfaces = getSurfaces();
+          var needsMode = surfaces.some(function (surface) {
+            return surface.getAttribute("data-seafit-mode") !== currentMode;
+          });
           var desktopSection = doc.querySelector('[data-vc-element="control-bar-main-section"]');
           var mobileSection = doc.querySelector('[data-vc-element="mobile-control-bar-bottom-content"]');
           var desktopMissing = desktopSection && !desktopSection.querySelector('button[' + CONTROL_ATTR + '="1"][data-seafit-layout="desktop"]');
@@ -310,7 +338,7 @@ function init() {
             subtree: true,
             characterData: true,
             attributes: true,
-            attributeFilter: ["src", "data-vc-element", "data-video-core-element", "data-seafit-mode"]
+            attributeFilter: ["src", "data-vc-element", "data-video-core-element", "data-seafit-mode", "data-seafit-anime-id"]
           });
         }
 
@@ -350,9 +378,9 @@ function init() {
               try { buttons[i].remove(); } catch (_) {}
             }
 
-            var video = getVideo();
-            if (video) {
-              try { video.removeAttribute("data-seafit-mode"); } catch (_) {}
+            var surfaces = getSurfaces();
+            for (var j = 0; j < surfaces.length; j++) {
+              try { surfaces[j].removeAttribute("data-seafit-mode"); } catch (_) {}
             }
 
             var style = doc.getElementById(STYLE_ID);
@@ -374,18 +402,35 @@ function init() {
     }
 
     async function ensureBootstrap() {
-      if (bootstrapPending) return;
+      if (bootstrapPending) {
+        bootstrapAgain = true;
+        return;
+      }
       bootstrapPending = true;
       try {
         var existing = await ctx.dom.queryOne("iframe[" + BOOTSTRAP_ATTR + "=\"1\"]");
-        if (existing) return;
+        var mediaId = "";
+        try {
+          var media = ctx.videoCore.getCurrentMedia();
+          if (media && /^[1-9]\d*$/.test(String(media.id))) mediaId = String(media.id);
+        } catch (_) {}
+        if (existing) {
+          existing.setAttribute("data-seafit-anime-id", mediaId);
+          // Re-execute the bootstrap on extension upgrades, even if the old
+          // hidden frame remains mounted after Seanime reloads the plugin.
+          if (!bootstrapApplied) existing.setAttribute("srcdoc", makeBootstrapHTML());
+          bootstrapApplied = true;
+          return;
+        }
 
         var frame = await ctx.dom.createElement("iframe");
         frame.setAttribute(BOOTSTRAP_ATTR, "1");
+        frame.setAttribute("data-seafit-anime-id", mediaId);
         frame.setAttribute("aria-hidden", "true");
         frame.setAttribute("tabindex", "-1");
         frame.setCssText("display:none!important;width:0!important;height:0!important;border:0!important;position:absolute!important;");
         frame.setAttribute("srcdoc", makeBootstrapHTML());
+        bootstrapApplied = true;
 
         ctx.setTimeout(async () => {
           try {
@@ -398,6 +443,10 @@ function init() {
         try { ctx.toast.error("SeaFit failed to initialize."); } catch (_) {}
       } finally {
         bootstrapPending = false;
+        if (bootstrapAgain) {
+          bootstrapAgain = false;
+          ensureBootstrap();
+        }
       }
     }
 
@@ -410,6 +459,9 @@ function init() {
 
     ctx.dom.onReady(() => { ensureIfPlayerExists(); });
     ctx.dom.onMainTabReady(() => { ensureIfPlayerExists(); });
+    ctx.videoCore.addEventListener("video-loaded", () => { ensureBootstrap(); });
+    ctx.videoCore.addEventListener("video-playback-state", () => { ensureBootstrap(); });
+    ctx.videoCore.addEventListener("video-playlist", () => { ensureBootstrap(); });
     ctx.dom.observe('video[data-vc-element="video"], video[data-video-core-element]', (elements) => {
       if (elements && elements.length) ensureBootstrap();
     });

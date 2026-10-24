@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const source = fs.readFileSync(require('node:path').join(__dirname, '../src/SeaFit.js'), 'utf8');
 const bootstrap = source.slice(source.indexOf('    function pageBootstrap()'), source.indexOf('    function makeBootstrapHTML()'));
 
-function setup(stored = {}) {
+function setup(stored = {}, frame = null) {
   const state = { title: 'Anime A', video: element(), style: null, writes: 0, frames: [], listeners: {} };
   function element() {
     const attrs = {};
@@ -31,7 +31,7 @@ function setup(stored = {}) {
     cancelAnimationFrame() { state.frames = []; },
     addEventListener(k, cb) { state.listeners[k] = cb; }, removeEventListener(k) { delete state.listeners[k]; }
   };
-  vm.runInNewContext(bootstrap + ';pageBootstrap();', { window: { parent: host } });
+  vm.runInNewContext(bootstrap + ';pageBootstrap();', { window: { parent: host, frameElement: frame } });
   state.host = host;
   state.api = host.__seafit;
   state.storage = storage;
@@ -94,7 +94,7 @@ test('observer coalesces mounts, watches source changes, and cleanup cancels pen
 
 test('version matches manifest and marketplace icon stays unchanged', () => {
   const manifest = JSON.parse(fs.readFileSync(require('node:path').join(__dirname, '../Manifest.json')));
-  assert.equal(manifest.version, '0.1.4');
+  assert.equal(manifest.version, '0.1.5');
   assert.equal(setup().api.version, manifest.version);
   assert.equal(manifest.icon, 'https://raw.githubusercontent.com/DefnoJae/SeaFit/refs/heads/main/assets/iconv3.jpg');
 });
@@ -102,12 +102,14 @@ test('version matches manifest and marketplace icon stays unchanged', () => {
 test('concurrent player notifications create only one bootstrap frame', async () => {
   const callbacks = [];
   let created = 0;
+  let frame = null;
   const ctx = {
+    videoCore: { addEventListener() {}, getCurrentMedia() { return { id: 1500 }; } },
     dom: {
       onReady() {}, onMainTabReady() {},
       observe(selector, cb) { callbacks.push(cb); },
-      async queryOne() { return null; },
-      async createElement() { created++; return { setAttribute() {}, setCssText() {} }; }
+      async queryOne() { return frame; },
+      async createElement() { created++; frame = { setAttribute() {}, setCssText() {} }; return frame; }
     },
     setTimeout() {}, toast: { error() { assert.fail('bootstrap failed'); } }
   };
@@ -115,4 +117,59 @@ test('concurrent player notifications create only one bootstrap frame', async ()
   callbacks.forEach(cb => cb([{}]));
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(created, 1);
+});
+
+test('extension reload upgrades an existing frame once and playback events update its identity', async () => {
+  const events = {};
+  const attrs = {};
+  let scripts = 0;
+  let id = 1500;
+  const frame = { setAttribute(k,v) { attrs[k] = v; if(k === 'srcdoc') scripts++; } };
+  const ctx = {
+    videoCore: { getCurrentMedia: () => ({id}), addEventListener(k,cb) { events[k] = cb; } },
+    dom: { onReady() {}, onMainTabReady() {}, observe() {}, async queryOne() { return frame; } },
+    toast: { error() { assert.fail('bootstrap failed'); } }
+  };
+  vm.runInNewContext(source + ';init();', { $ui: { register(cb) { cb(ctx); } } });
+  events['video-loaded']();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(attrs['data-seafit-anime-id'], '1500');
+  assert.match(attrs.srcdoc, /0\.1\.5/);
+  id = 999; events['video-playback-state']();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(attrs['data-seafit-anime-id'], '999');
+  id = null; events['video-playlist']();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(attrs['data-seafit-anime-id'], '');
+  assert.equal(scripts, 1);
+});
+
+test('playback identity survives hidden titles and ignores unrelated entry pages', () => {
+  let id = '1500';
+  const s = setup({}, { hasAttribute() { return true; }, getAttribute() { return id; } });
+  s.api.setMode('fill');
+  s.title = ''; s.host.location.href = 'app://-/entry?id=999'; s.api.mount();
+  assert.equal(s.api.getAnimeKey(), 'id:1500');
+  assert.equal(s.api.getMode(), 'fill');
+  id = '999'; s.observe(); s.flush();
+  assert.equal(s.api.getMode(), 'fit');
+  id = ''; s.observe(); s.flush();
+  assert.equal(s.api.getAnimeKey(), null);
+  assert.equal(s.api.getMode(), 'fit');
+});
+
+test('Anime4K display canvases inherit mode when added or replaced', () => {
+  const s = setup();
+  const attrs = {};
+  const canvas = { getAttribute: k => attrs[k], setAttribute(k,v) { attrs[k] = v; }, removeAttribute(k) { delete attrs[k]; } };
+  s.video.parentElement = { querySelectorAll(selector) {
+    assert.equal(selector, 'canvas.vc-anime4k-canvas, canvas[data-mpv-prism-video-canvas]');
+    return [canvas];
+  } };
+  s.api.setMode('fill');
+  assert.equal(attrs['data-seafit-mode'], 'fill');
+  canvas.removeAttribute('data-seafit-mode'); s.observe(); s.flush();
+  assert.equal(attrs['data-seafit-mode'], 'fill');
+  s.api.destroy();
+  assert.equal(attrs['data-seafit-mode'], undefined);
 });
