@@ -11,7 +11,7 @@ function init() {
         var doc = host && host.document;
         if (!host || !doc) return;
 
-        var VERSION = "0.1.5";
+        var VERSION = "0.1.6";
         var STORAGE_KEY = "seafit.modeByAnime.v1";
         var LEGACY_STORAGE_KEY = "seafit.mode";
         var STYLE_ID = "seafit-player-style";
@@ -68,7 +68,9 @@ function init() {
             var frame = window.frameElement;
             if (frame && frame.hasAttribute("data-seafit-anime-id")) {
               var mediaId = frame.getAttribute("data-seafit-anime-id");
-              return /^[1-9]\d*$/.test(mediaId) ? "id:" + mediaId : null;
+              // "dom" explicitly selects the fallback on Seanime builds
+              // that do not expose the optional UI Video Core API.
+              if (mediaId !== "dom") return /^[1-9]\d*$/.test(mediaId) ? "id:" + mediaId : null;
             }
           } catch (_) {}
           // The entry route gives us the strongest identifier when the player
@@ -409,10 +411,13 @@ function init() {
       bootstrapPending = true;
       try {
         var existing = await ctx.dom.queryOne("iframe[" + BOOTSTRAP_ATTR + "=\"1\"]");
-        var mediaId = "";
+        var mediaId = "dom";
         try {
-          var media = ctx.videoCore.getCurrentMedia();
-          if (media && /^[1-9]\d*$/.test(String(media.id))) mediaId = String(media.id);
+          if (ctx.videoCore && typeof ctx.videoCore.getCurrentMedia === "function") {
+            mediaId = "";
+            var media = ctx.videoCore.getCurrentMedia();
+            if (media && /^[1-9]\d*$/.test(String(media.id))) mediaId = String(media.id);
+          }
         } catch (_) {}
         if (existing) {
           existing.setAttribute("data-seafit-anime-id", mediaId);
@@ -459,9 +464,11 @@ function init() {
 
     ctx.dom.onReady(() => { ensureIfPlayerExists(); });
     ctx.dom.onMainTabReady(() => { ensureIfPlayerExists(); });
-    ctx.videoCore.addEventListener("video-loaded", () => { ensureBootstrap(); });
-    ctx.videoCore.addEventListener("video-playback-state", () => { ensureBootstrap(); });
-    ctx.videoCore.addEventListener("video-playlist", () => { ensureBootstrap(); });
+    if (ctx.videoCore && typeof ctx.videoCore.addEventListener === "function") {
+      ctx.videoCore.addEventListener("video-loaded", () => { ensureBootstrap(); });
+      ctx.videoCore.addEventListener("video-playback-state", () => { ensureBootstrap(); });
+      ctx.videoCore.addEventListener("video-playlist", () => { ensureBootstrap(); });
+    }
     ctx.dom.observe('video[data-vc-element="video"], video[data-video-core-element]', (elements) => {
       if (elements && elements.length) ensureBootstrap();
     });

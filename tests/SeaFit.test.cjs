@@ -94,7 +94,7 @@ test('observer coalesces mounts, watches source changes, and cleanup cancels pen
 
 test('version matches manifest and marketplace icon stays unchanged', () => {
   const manifest = JSON.parse(fs.readFileSync(require('node:path').join(__dirname, '../Manifest.json')));
-  assert.equal(manifest.version, '0.1.5');
+  assert.equal(manifest.version, '0.1.6');
   assert.equal(setup().api.version, manifest.version);
   assert.equal(manifest.icon, 'https://raw.githubusercontent.com/DefnoJae/SeaFit/refs/heads/main/assets/iconv3.jpg');
 });
@@ -134,7 +134,7 @@ test('extension reload upgrades an existing frame once and playback events updat
   events['video-loaded']();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(attrs['data-seafit-anime-id'], '1500');
-  assert.match(attrs.srcdoc, /0\.1\.5/);
+  assert.match(attrs.srcdoc, /0\.1\.6/);
   id = 999; events['video-playback-state']();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(attrs['data-seafit-anime-id'], '999');
@@ -173,3 +173,34 @@ test('Anime4K display canvases inherit mode when added or replaced', () => {
   s.api.destroy();
   assert.equal(attrs['data-seafit-mode'], undefined);
 });
+
+for (const [label, videoCore] of [['missing', undefined], ['null', null], ['partial', {}]]) {
+  test(`plugin initializes and mounts with ${label} UI Video Core API`, async () => {
+    const observers = [];
+    const attrs = {};
+    const frame = { setAttribute(k,v) { attrs[k] = v; }, setCssText() {} };
+    const ctx = {
+      videoCore,
+      dom: {
+        onReady() {}, onMainTabReady() {},
+        observe(selector, cb) { observers.push(cb); },
+        async queryOne() { return null; }, async createElement() { return frame; }
+      },
+      setTimeout() {}, toast: { error() { assert.fail('bootstrap failed'); } }
+    };
+    assert.doesNotThrow(() => vm.runInNewContext(source + ';init();', { $ui: { register(cb) { cb(ctx); } } }));
+    assert.equal(observers.length, 4, 'all DOM observers must register despite absent optional API');
+    observers[0]([{}]);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(attrs['data-seafit-anime-id'], 'dom');
+    assert.match(attrs.srcdoc, /0\.1\.6/);
+    const s = setup({}, { hasAttribute() { return true; }, getAttribute() { return attrs['data-seafit-anime-id']; } });
+    assert.equal(s.api.getAnimeKey(), 'title:anime a');
+    s.api.setMode('stretch'); s.replace();
+    assert.equal(s.api.getMode(), 'stretch');
+    s.title = ''; s.api.mount();
+    assert.equal(s.api.getMode(), 'fit');
+    s.host.location.href = 'app://-/entry?id=1500'; s.api.mount();
+    assert.equal(s.api.getAnimeKey(), 'id:1500');
+  });
+}

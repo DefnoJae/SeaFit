@@ -49,9 +49,9 @@ This means playback, subtitles, seeking, volume, quality selection, and the rest
 
 ## Version
 
-Current release: **0.1.5**
+Current release: **0.1.6**
 
-Playback identity comes from Video Core, including mini-player playback. Aspect modes also apply to the Anime4K display canvas. Extension updates refresh an existing bootstrap so the new code takes effect.
+When the UI Video Core API is available, playback identity comes from that API, including mini-player playback. Other builds use the entry route or visible player title, falling back to Fit when neither is available. Aspect modes also apply to the Anime4K display canvas. Extension updates refresh an existing bootstrap so the new code takes effect.
 
 Unknown anime identities safely use Original / Fit and do not save a mode until an anime can be identified. Existing per-anime preferences are preserved.
 
